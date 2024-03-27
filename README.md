@@ -28,6 +28,18 @@
 
 <hr />
 
+## Why implement with OpenMP?
+
+- TBB is made by Intel, and it is not available on all platforms.
+- OpenMP is a standard for parallel programming on shared-memory systems, and it is available on most platforms.
+
+## Changes
+
+- Replaced TBB usage by OpenMP.
+  - To set the number of threads, use the `NUM_THREADS` in `cpp/kiss_icp/CMakeLists.txt`.
+  - OpenMP implementation is slightly slower than TBB (around 10% slower), but it is more portable.
+
+
 ## Install
 
 ```sh
