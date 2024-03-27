@@ -38,7 +38,7 @@ if(NOT eigen_POPULATED)
   if(${CMAKE_VERSION} GREATER_EQUAL 3.25)
     add_subdirectory(${eigen_SOURCE_DIR} ${eigen_BINARY_DIR} SYSTEM EXCLUDE_FROM_ALL)
   else()
-    # Emulate the SYSTEM flag introduced in CMake 3.25. Withouth this flag the compiler will
+    # Emulate the SYSTEM flag introduced in CMake 3.25. Without this flag the compiler will
     # consider this 3rdparty headers as source code and fail due the -Werror flag.
     add_subdirectory(${eigen_SOURCE_DIR} ${eigen_BINARY_DIR} EXCLUDE_FROM_ALL)
     get_target_property(eigen_include_dirs eigen INTERFACE_INCLUDE_DIRECTORIES)

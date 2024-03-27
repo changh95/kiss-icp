@@ -22,11 +22,10 @@
 // SOFTWARE.
 #include "Deskew.hpp"
 
-#include <tbb/parallel_for.h>
-
 #include <Eigen/Core>
 #include <sophus/se3.hpp>
 #include <vector>
+#include <omp.h>
 
 namespace {
 /// TODO(Nacho) Explain what is the very important meaning of this param
@@ -40,10 +39,13 @@ std::vector<Eigen::Vector3d> DeSkewScan(const std::vector<Eigen::Vector3d> &fram
                                         const Sophus::SE3d &finish_pose) {
     const auto delta_pose = (start_pose.inverse() * finish_pose).log();
     std::vector<Eigen::Vector3d> corrected_frame(frame.size());
-    tbb::parallel_for(size_t(0), frame.size(), [&](size_t i) {
+
+    #pragma omp parallel for num_threads(NUM_THREADS)
+    for(size_t i = 0; i < frame.size(); i++) {
         const auto motion = Sophus::SE3d::exp((timestamps[i] - mid_pose_timestamp) * delta_pose);
         corrected_frame[i] = motion * frame[i];
-    });
+    }
+
     return corrected_frame;
 }
 }  // namespace kiss_icp

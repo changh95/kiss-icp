@@ -22,11 +22,6 @@
 // SOFTWARE.
 #include "Registration.hpp"
 
-#include <tbb/blocked_range.h>
-#include <tbb/global_control.h>
-#include <tbb/info.h>
-#include <tbb/parallel_reduce.h>
-
 #include <algorithm>
 #include <cmath>
 #include <numeric>
@@ -90,32 +85,17 @@ std::tuple<Eigen::Vector3d, double> GetClosestNeighbor(const Eigen::Vector3d &po
 Associations FindAssociations(const std::vector<Eigen::Vector3d> &points,
                               const kiss_icp::VoxelHashMap &voxel_map,
                               double max_correspondance_distance) {
-    using points_iterator = std::vector<Eigen::Vector3d>::const_iterator;
     Associations associations;
     associations.reserve(points.size());
-    associations = tbb::parallel_reduce(
-        // Range
-        tbb::blocked_range<points_iterator>{points.cbegin(), points.cend()},
-        // Identity
-        associations,
-        // 1st lambda: Parallel computation
-        [&](const tbb::blocked_range<points_iterator> &r, Associations res) -> Associations {
-            res.reserve(r.size());
-            std::for_each(r.begin(), r.end(), [&](const auto &point) {
-                const auto &[closest_neighbor, distance] = GetClosestNeighbor(point, voxel_map);
-                if (distance < max_correspondance_distance) {
-                    res.emplace_back(point, closest_neighbor);
-                }
-            });
-            return res;
-        },
-        // 2nd lambda: Parallel reduction
-        [](Associations a, const Associations &b) -> Associations {
-            a.insert(a.end(),                              //
-                     std::make_move_iterator(b.cbegin()),  //
-                     std::make_move_iterator(b.cend()));
-            return a;
-        });
+
+    #pragma omp parallel for num_threads(NUM_THREADS)
+    for(size_t i = 0; i < points.size(); i++) {
+        const auto &[closest_neighbor, distance] = GetClosestNeighbor(points[i], voxel_map);
+        if (distance < max_correspondance_distance) {
+            #pragma omp critical
+            associations.emplace_back(points[i], closest_neighbor);
+        }
+    }
 
     return associations;
 }
@@ -130,34 +110,24 @@ LinearSystem BuildLinearSystem(const Associations &associations, double kernel) 
         return std::make_tuple(J_r, residual);
     };
 
-    auto sum_linear_systems = [](LinearSystem a, const LinearSystem &b) {
-        a.first += b.first;
-        a.second += b.second;
-        return a;
-    };
-
     auto GM_weight = [&](double residual2) { return square(kernel) / square(kernel + residual2); };
 
-    using associations_iterator = Associations::const_iterator;
-    const auto &[JTJ, JTr] = tbb::parallel_reduce(
-        // Range
-        tbb::blocked_range<associations_iterator>{associations.cbegin(), associations.cend()},
-        // Identity
-        LinearSystem(Eigen::Matrix6d::Zero(), Eigen::Vector6d::Zero()),
-        // 1st Lambda: Parallel computation
-        [&](const tbb::blocked_range<associations_iterator> &r, LinearSystem J) -> LinearSystem {
-            return std::transform_reduce(
-                r.begin(), r.end(), J, sum_linear_systems, [&](const auto &association) {
-                    const auto &[J_r, residual] = compute_jacobian_and_residual(association);
-                    const double w = GM_weight(residual.squaredNorm());
-                    return LinearSystem(J_r.transpose() * w * J_r,        // JTJ
-                                        J_r.transpose() * w * residual);  // JTr
-                });
-        },
-        // 2nd Lambda: Parallel reduction of the private Jacboians
-        sum_linear_systems);
+    LinearSystem J(Eigen::Matrix6d::Zero(), Eigen::Vector6d::Zero());
 
-    return {JTJ, JTr};
+    #pragma omp parallel for num_threads(NUM_THREADS)
+    for(size_t i = 0; i < associations.size(); i++) {
+        const auto &[J_r, residual] = compute_jacobian_and_residual(associations[i]);
+        const double w = GM_weight(residual.squaredNorm());
+        LinearSystem temp(J_r.transpose() * w * J_r,        // JTJ
+                          J_r.transpose() * w * residual);  // JTr
+        #pragma omp critical
+        {
+            J.first += temp.first;
+            J.second += temp.second;
+        }
+    }
+
+    return J;
 }
 }  // namespace
 
@@ -166,12 +136,8 @@ namespace kiss_icp {
 Registration::Registration(int max_num_iteration, double convergence_criterion, int max_num_threads)
     : max_num_iterations_(max_num_iteration),
       convergence_criterion_(convergence_criterion),
-      // Only manipulate the number of threads if the user specifies something greater than 0
-      max_num_threads_(max_num_threads > 0 ? max_num_threads : tbb::info::default_concurrency()) {
-    // This global variable requires static duration storage to be able to manipulate the max
-    // concurrency from TBB across the entire class
-    static const auto tbb_control_settings = tbb::global_control(
-        tbb::global_control::max_allowed_parallelism, static_cast<size_t>(max_num_threads_));
+      max_num_threads_(max_num_threads > 0 ? max_num_threads : omp_get_max_threads()) {
+    omp_set_num_threads(max_num_threads_);
 }
 
 Sophus::SE3d Registration::AlignPointsToMap(const std::vector<Eigen::Vector3d> &frame,

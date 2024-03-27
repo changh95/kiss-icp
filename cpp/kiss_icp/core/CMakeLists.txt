@@ -23,5 +23,5 @@
 add_library(core STATIC)
 add_library(kiss_icp::core ALIAS core)
 target_sources(core PRIVATE Registration.cpp Deskew.cpp VoxelHashMap.cpp Preprocessing.cpp Threshold.cpp)
-target_link_libraries(core PUBLIC Eigen3::Eigen tsl::robin_map TBB::tbb Sophus::Sophus)
+target_link_libraries(core PUBLIC Eigen3::Eigen tsl::robin_map OpenMP::OpenMP_CXX Sophus::Sophus)
 set_global_target_properties(core)
