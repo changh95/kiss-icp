@@ -50,9 +50,11 @@ void TransformPoints(const Sophus::SE3d &T, std::vector<Eigen::Vector3d> &points
 using Voxel = kiss_icp::VoxelHashMap::Voxel;
 std::vector<Voxel> GetAdjacentVoxels(const Voxel &voxel, int adjacent_voxels = 1) {
     std::vector<Voxel> voxel_neighborhood;
-    for (int i = voxel.x() - adjacent_voxels; i < voxel.x() + adjacent_voxels + 1; ++i) {
-        for (int j = voxel.y() - adjacent_voxels; j < voxel.y() + adjacent_voxels + 1; ++j) {
-            for (int k = voxel.z() - adjacent_voxels; k < voxel.z() + adjacent_voxels + 1; ++k) {
+    voxel_neighborhood.reserve(static_cast<size_t>(std::pow((2 * adjacent_voxels + 1), 3)));
+
+    for (int i = voxel.x() - adjacent_voxels; i <= voxel.x() + adjacent_voxels; ++i) {
+        for (int j = voxel.y() - adjacent_voxels; j <= voxel.y() + adjacent_voxels; ++j) {
+            for (int k = voxel.z() - adjacent_voxels; k <= voxel.z() + adjacent_voxels; ++k) {
                 voxel_neighborhood.emplace_back(i, j, k);
             }
         }
@@ -88,11 +90,12 @@ Associations FindAssociations(const std::vector<Eigen::Vector3d> &points,
     Associations associations;
     associations.reserve(points.size());
 
-    #pragma omp parallel for num_threads(NUM_THREADS)
+    #pragma omp declare reduction (merge : Associations : omp_out.insert(omp_out.end(), omp_in.begin(), omp_in.end()))
+
+    #pragma omp parallel for reduction(merge: associations) schedule(dynamic) num_threads(NUM_THREADS)
     for(size_t i = 0; i < points.size(); i++) {
         const auto &[closest_neighbor, distance] = GetClosestNeighbor(points[i], voxel_map);
         if (distance < max_correspondance_distance) {
-            #pragma omp critical
             associations.emplace_back(points[i], closest_neighbor);
         }
     }
@@ -112,22 +115,33 @@ LinearSystem BuildLinearSystem(const Associations &associations, double kernel) 
 
     auto GM_weight = [&](double residual2) { return square(kernel) / square(kernel + residual2); };
 
-    LinearSystem J(Eigen::Matrix6d::Zero(), Eigen::Vector6d::Zero());
+    double JTJ_array[36] = {0.0};
+    double JTr_array[6] = {0.0};
 
-    #pragma omp parallel for num_threads(NUM_THREADS)
+    #pragma omp parallel for reduction(+:JTJ_array[:36], JTr_array[:6]) schedule(dynamic) num_threads(NUM_THREADS)
     for(size_t i = 0; i < associations.size(); i++) {
         const auto &[J_r, residual] = compute_jacobian_and_residual(associations[i]);
         const double w = GM_weight(residual.squaredNorm());
-        LinearSystem temp(J_r.transpose() * w * J_r,        // JTJ
-                          J_r.transpose() * w * residual);  // JTr
-        #pragma omp critical
-        {
-            J.first += temp.first;
-            J.second += temp.second;
+        Eigen::Matrix6d temp_JTJ = J_r.transpose() * w * J_r;        // JTJ
+        Eigen::Vector6d temp_JTr = J_r.transpose() * w * residual;  // JTr
+        for (int j = 0; j < 36; j++) {
+            JTJ_array[j] += temp_JTJ(j / 6, j % 6);
+        }
+        for (int j = 0; j < 6; j++) {
+            JTr_array[j] += temp_JTr(j);
         }
     }
 
-    return J;
+    Eigen::Matrix6d JTJ;
+    Eigen::Vector6d JTr;
+    for (int j = 0; j < 36; j++) {
+        JTJ(j / 6, j % 6) = JTJ_array[j];
+    }
+    for (int j = 0; j < 6; j++) {
+        JTr(j) = JTr_array[j];
+    }
+
+    return {JTJ, JTr};
 }
 }  // namespace
 
